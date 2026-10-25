@@ -12,6 +12,22 @@ This project automates the first step of CRISPR gene editing: scanning a target 
 * **Zero Dependencies:** Pure Python implementation. No external libraries, databases, or API keys required.
 * **Web App Interface:** Includes a single-file HTML/JS web application with a sequence inspector and CSV export.
 
+### 2. Command-Line (Python)
+The standalone Python CLI (`src/crispr_designer.py`) uses the exact same double-stranded coordinate engine as the web application.
+
+```bash
+# Run full double-stranded scan on default HBB sequence (100 PAMs, 96 usable, 71 passing)
+python src/crispr_designer.py
+
+# Reproduce Project #3 forward-strand benchmark only (44 PAMs, 42 usable, 34 passing)
+python src/crispr_designer.py --strand +
+
+# Rank guides by proximity of Cas9 cut site to the sickle-cell mutation (base 20) and export CSV
+python src/crispr_designer.py --strand both --target 20 --sort target --out-csv hbb_guides.csv
+
+# Run on a custom FASTA file with a custom GC window
+python src/crispr_designer.py --fasta my_gene.fasta --min-gc 45 --max-gc 55
+
 ## Repository Structure
 
 ```text
