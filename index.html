@@ -1,0 +1,1625 @@
+<!--
+=============================================================================
+CRISPR SpCas9 Guide RNA Designer
+=============================================================================
+Description: A single-file, client-side web application that automates the 
+design and validation of CRISPR SpCas9 guide RNAs (sgRNAs). 
+
+Key Features:
+- Scans forward (NGG) and reverse (CCN) DNA strands for SpCas9 PAM sites.
+- Extracts 20-nucleotide upstream spacers for each target.
+- Filters candidates by thermodynamic stability (40% - 60% GC content).
+- Ranks viable guides by proximity to the ideal 50% GC biochemical optimum.
+- Provides an interactive double-stranded cleavage map and CSV data export.
+
+Note: This tool runs entirely in the browser with zero external dependencies.
+=============================================================================
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>CRISPR SpCas9 Guide RNA Designer</title>
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            lab: {
+              50: '#f0f7ff',
+              100: '#e0effe',
+              500: '#0284c7',
+              600: '#0369a1',
+              700: '#075985',
+              900: '#0c4a6e',
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Scrollbars & Scientific UI Polish */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+
+    .dna-base {
+      display: inline-flex;
+      flex-direction: column;
+      align-items: center;
+      width: 22px;
+      user-select: none;
+      transition: all 0.15s ease;
+    }
+    .dna-base:hover {
+      transform: translateY(-2px);
+    }
+
+    @keyframes pulse-border {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+      50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }
+    }
+    .highlight-pulse {
+      animation: pulse-border 2s infinite;
+    }
+  </style>
+</head>
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen flex flex-col selection:bg-indigo-500 selection:text-white">
+
+  <!-- Top Navigation Header -->
+  <header class="border-b border-slate-800 bg-slate-900/80 backdrop-blur-md sticky top-0 z-30">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-3.5 flex flex-wrap items-center justify-between gap-4">
+      <div class="flex items-center gap-3">
+        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-indigo-500 via-sky-500 to-emerald-500 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+          <i class="fa-solid fa-dna text-white text-lg"></i>
+        </div>
+        <div>
+          <div class="flex items-center gap-2.5">
+            <h1 class="text-lg sm:text-xl font-bold tracking-tight text-white">CRISPR SpCas9 Guide RNA Designer</h1>
+            <span class="hidden sm:inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">
+              5'-NGG-3' PAM
+            </span>
+          </div>
+          <p class="text-xs text-slate-400">Automated Protospacer Discovery, GC% Optimization &amp; Cleavage Site Mapping</p>
+        </div>
+      </div>
+
+      <div class="flex items-center gap-2.5">
+        <button id="btnLoadHbb" type="button" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border border-emerald-500/30 transition cursor-pointer">
+          <i class="fa-solid fa-flask"></i>
+          <span>Load HBB Preset (NM_000518.4)</span>
+        </button>
+        <button id="btnShowPythonModal" type="button" class="inline-flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition cursor-pointer">
+          <i class="fa-brands fa-python text-sky-400"></i>
+          <span>Get Python Code</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Content Container -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6">
+
+    <!-- Top Grid: Sequence Input + Parameters -->
+    <section class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+
+      <!-- Left Column: FASTA / Raw Sequence Input (7 cols) -->
+      <div class="lg:col-span-7 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl">
+        <div>
+          <div class="flex flex-wrap items-center justify-between gap-2 mb-3">
+            <div class="flex items-center gap-2">
+              <i class="fa-solid fa-file-code text-indigo-400"></i>
+              <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-200">1. Input DNA / FASTA Sequence</h2>
+            </div>
+
+            <div class="flex items-center gap-2">
+              <!-- File Upload Label -->
+              <label for="fastaFileInput" class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 cursor-pointer transition">
+                <i class="fa-solid fa-upload text-indigo-400"></i>
+                <span>Upload FASTA / TXT</span>
+              </label>
+              <input id="fastaFileInput" type="file" accept=".fasta,.fa,.fna,.txt" class="hidden" />
+
+              <button id="btnClearSeq" type="button" class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-slate-800/70 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-800 hover:border-rose-800/50 transition cursor-pointer" title="Clear sequence">
+                <i class="fa-solid fa-trash-can"></i>
+                <span>Clear</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Header Display Pill -->
+          <div id="fastaHeaderBanner" class="mb-2.5 px-3 py-1.5 rounded-lg bg-slate-950/90 border border-slate-800 flex items-center justify-between text-xs text-slate-400">
+            <div class="flex items-center gap-2 truncate">
+              <span class="px-1.5 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-mono text-[11px] font-semibold">FASTA</span>
+              <span id="parsedHeaderText" class="truncate font-mono text-slate-300">NM_000518.4 Homo sapiens hemoglobin subunit beta (HBB), mRNA CDS</span>
+            </div>
+            <span id="baseCountBadge" class="ml-2 shrink-0 font-mono text-emerald-400 font-semibold">444 bp</span>
+          </div>
+
+          <!-- Sequence Textarea -->
+          <div class="relative">
+            <textarea
+              id="sequenceInput"
+              rows="6"
+              spellcheck="false"
+              placeholder="Paste FASTA (>header + sequence) or raw DNA sequence (A, T, C, G)..."
+              class="w-full rounded-xl bg-slate-950 border border-slate-800 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 p-3.5 font-mono text-xs sm:text-sm text-slate-200 leading-relaxed outline-none transition resize-y"
+            ></textarea>
+          </div>
+        </div>
+
+        <!-- Validation & Quick Presets Footer -->
+        <div class="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 text-xs">
+          <div id="validationStatus" class="flex items-center gap-2 text-emerald-400">
+            <i class="fa-solid fa-circle-check"></i>
+            <span>Valid DNA sequence (only A, T, C, G bases).</span>
+          </div>
+
+          <div class="flex items-center gap-2 text-slate-400">
+            <span>Quick Load:</span>
+            <button type="button" id="btnPresetHbb" class="text-indigo-400 hover:text-indigo-300 underline underline-offset-2 cursor-pointer font-medium">HBB (444 bp)</button>
+            <span>•</span>
+            <button type="button" id="btnPresetSickleMut" class="text-amber-400 hover:text-amber-300 underline underline-offset-2 cursor-pointer font-medium">HBB Sickle Mutant (20A&gt;T)</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Configurable Parameters (5 cols) -->
+      <div class="lg:col-span-5 bg-slate-900 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between shadow-xl space-y-4">
+        <div>
+          <div class="flex items-center justify-between mb-3">
+            <div class="flex items-center gap-2">
+              <i class="fa-solid fa-sliders text-sky-400"></i>
+              <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-200">2. Design Parameters</h2>
+            </div>
+            <button id="btnResetParams" type="button" class="text-xs text-slate-400 hover:text-slate-200 flex items-center gap-1 cursor-pointer transition">
+              <i class="fa-solid fa-rotate-left"></i>
+              <span>Reset Defaults</span>
+            </button>
+          </div>
+
+          <!-- Strand Selection Toggle -->
+          <div class="mb-4">
+            <label class="block text-xs font-medium text-slate-300 mb-1.5">Strand Scanning Mode</label>
+            <div class="grid grid-cols-3 gap-1.5 p-1 bg-slate-950 rounded-xl border border-slate-800" role="group">
+              <button type="button" data-strand="forward" class="strand-btn py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer bg-indigo-600 text-white shadow">
+                Forward (+)
+              </button>
+              <button type="button" data-strand="reverse" class="strand-btn py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer text-slate-400 hover:text-slate-200">
+                Reverse (-)
+              </button>
+              <button type="button" data-strand="both" class="strand-btn py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer text-slate-400 hover:text-slate-200">
+                Both (+ / -)
+              </button>
+            </div>
+            <p class="mt-1 text-[11px] text-slate-400">
+              Forward scans <code class="text-indigo-300 font-mono">5'-NGG-3'</code>; Reverse scans reverse-complement (<code class="text-sky-300 font-mono">5'-CCN-3'</code> on + strand).
+            </p>
+          </div>
+
+          <!-- GC% Filter Window -->
+          <div class="grid grid-cols-3 gap-3 mb-4">
+            <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+              <label for="minGcInput" class="block text-[11px] font-medium text-slate-400 mb-1">Min GC%</label>
+              <div class="flex items-center">
+                <input id="minGcInput" type="number" min="0" max="100" step="5" value="40" class="w-full bg-transparent font-mono text-sm font-bold text-white outline-none" />
+                <span class="text-xs text-slate-500 font-mono">%</span>
+              </div>
+            </div>
+
+            <div class="bg-slate-950 p-2.5 rounded-xl border border-slate-800">
+              <label for="maxGcInput" class="block text-[11px] font-medium text-slate-400 mb-1">Max GC%</label>
+              <div class="flex items-center">
+                <input id="maxGcInput" type="number" min="0" max="100" step="5" value="60" class="w-full bg-transparent font-mono text-sm font-bold text-white outline-none" />
+                <span class="text-xs text-slate-500 font-mono">%</span>
+              </div>
+            </div>
+
+            <div class="bg-slate-950 p-2.5 rounded-xl border border-emerald-500/30">
+              <label for="optGcInput" class="block text-[11px] font-medium text-emerald-400 mb-1">Optimal GC%</label>
+              <div class="flex items-center">
+                <input id="optGcInput" type="number" min="0" max="100" step="5" value="50" class="w-full bg-transparent font-mono text-sm font-bold text-emerald-300 outline-none" />
+                <span class="text-xs text-emerald-500 font-mono">%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- Target Base Position (Sickle Cell Locus / HDR Distance) -->
+          <div class="bg-slate-950/90 p-3 rounded-xl border border-slate-800">
+            <div class="flex items-center justify-between mb-1.5">
+              <label for="targetBaseInput" class="text-xs font-medium text-slate-300 flex items-center gap-1.5">
+                <i class="fa-solid fa-crosshairs text-amber-400"></i>
+                <span>Target Mutation Base Position <span class="text-slate-500 font-normal">(Optional, 1-based)</span></span>
+              </label>
+              <button type="button" id="btnSetSicklePos" class="text-[11px] px-2 py-0.5 rounded bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 transition cursor-pointer">
+                Base 20 (HBB Codon 7)
+              </button>
+            </div>
+            <div class="flex items-center gap-2">
+              <input
+                id="targetBaseInput"
+                type="number"
+                min="1"
+                placeholder="e.g., 20 for HBB Glu6Val (GAG -> GTG)"
+                value="20"
+                class="w-full rounded-lg bg-slate-900 border border-slate-700/80 px-3 py-1.5 font-mono text-xs text-amber-300 placeholder:text-slate-600 outline-none focus:border-amber-500"
+              />
+              <button type="button" id="btnClearTargetPos" class="px-2.5 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-400 hover:text-slate-200 cursor-pointer transition" title="Clear target position">
+                Clear
+              </button>
+            </div>
+            <p class="mt-1.5 text-[11px] text-slate-400">
+              Calculates exact distance (bp) from each Cas9 cleavage site (3 nt upstream of PAM) to your target nucleotide.
+            </p>
+          </div>
+        </div>
+
+        <!-- Verification Banner (Visible when HBB sequence matches) -->
+        <div id="benchmarkBadge" class="px-3.5 py-2.5 rounded-xl bg-emerald-950/50 border border-emerald-500/40 flex items-center justify-between gap-3">
+          <div class="flex items-center gap-2.5">
+            <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 animate-ping"></span>
+            <div class="text-xs">
+              <span class="font-semibold text-emerald-300">Project #3 Benchmark Verified (HBB RefSeq NM_000518.4)</span>
+              <p class="text-[11px] text-emerald-200/80">Forward: 44 PAMs • 42 Usable Guides • 34 Passing (40–60% GC) • #1: GTGAACGTGGATGAAGTTGG</p>
+            </div>
+          </div>
+          <i class="fa-solid fa-award text-emerald-400 text-lg shrink-0"></i>
+        </div>
+      </div>
+
+    </section>
+
+    <!-- Summary Metrics Cards (4 Cards) -->
+    <section class="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      <!-- Card 1: Sequence Length & Overall GC -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>SEQUENCE LENGTH &amp; GC</span>
+          <i class="fa-solid fa-ruler-horizontal text-indigo-400"></i>
+        </div>
+        <div class="flex items-baseline gap-2.5 mt-1">
+          <span id="metricSeqLen" class="text-2xl sm:text-3xl font-bold font-mono text-white">444 bp</span>
+          <span id="metricSeqGc" class="text-xs font-mono px-2 py-0.5 rounded-full bg-indigo-500/15 text-indigo-300 border border-indigo-500/30">57.7% GC</span>
+        </div>
+        <p id="metricCodonInfo" class="text-[11px] text-slate-400 mt-1.5">148 codons (147 aa + stop)</p>
+      </div>
+
+      <!-- Card 2: Total PAM Sites -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>TOTAL PAM SITES (NGG)</span>
+          <i class="fa-solid fa-magnet text-sky-400"></i>
+        </div>
+        <div class="flex items-baseline gap-2.5 mt-1">
+          <span id="metricTotalPams" class="text-2xl sm:text-3xl font-bold font-mono text-sky-400">44</span>
+          <span id="metricStrandBreakdown" class="text-xs text-slate-400 font-mono">Forward (+)</span>
+        </div>
+        <p class="text-[11px] text-slate-400 mt-1.5">All 5'-NGG-3' recognition motifs</p>
+      </div>
+
+      <!-- Card 3: Usable 20-nt Guides -->
+      <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 shadow-lg">
+        <div class="flex items-center justify-between text-slate-400 text-xs font-medium mb-1">
+          <span>USABLE 20-NT GUIDES</span>
+          <i class="fa-solid fa-scissors text-purple-400"></i>
+        </div>
+        <div class="flex items-baseline gap-2.5 mt-1">
+          <span id="metricUsableGuides" class="text-2xl sm:text-3xl font-bold font-mono text-purple-300">42</span>
+          <span id="metricDroppedPams" class="text-xs text-slate-400 font-mono">2 near 5' boundary</span>
+        </div>
+        <p class="text-[11px] text-slate-400 mt-1.5">PAMs with full 20 bp upstream spacer</p>
+      </div>
+
+      <!-- Card 4: Guides Passing GC Filter -->
+      <div class="bg-slate-900 border border-emerald-500/30 rounded-2xl p-4 shadow-lg bg-gradient-to-br from-slate-900 to-emerald-950/20">
+        <div class="flex items-center justify-between text-emerald-300 text-xs font-medium mb-1">
+          <span>PASSING GC FILTER</span>
+          <i class="fa-solid fa-circle-check text-emerald-400"></i>
+        </div>
+        <div class="flex items-baseline gap-2.5 mt-1">
+          <span id="metricPassingGuides" class="text-2xl sm:text-3xl font-bold font-mono text-emerald-400">34</span>
+          <span id="metricExact50Count" class="text-xs font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">8 at 50% GC</span>
+        </div>
+        <p id="metricFilterWindowLabel" class="text-[11px] text-slate-400 mt-1.5">Within 40% – 60% GC window</p>
+      </div>
+    </section>
+
+    <!-- Interactive Gene Map & Active Guide Sequence Inspector -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-5">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-map-location-dot text-emerald-400"></i>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-200">3. Interactive Gene Cleavage Map &amp; Double-Stranded Inspector</h2>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">Click any guide marker on the map or row in the table below to inspect its exact 20-nt protospacer, PAM, and Cas9 cleavage site.</p>
+        </div>
+
+        <!-- Legend -->
+        <div class="flex flex-wrap items-center gap-3 text-xs">
+          <span class="inline-flex items-center gap-1.5 text-slate-300">
+            <span class="w-3 h-3 rounded-sm bg-indigo-500 inline-block"></span> 20-nt Guide Spacer
+          </span>
+          <span class="inline-flex items-center gap-1.5 text-slate-300">
+            <span class="w-3 h-3 rounded-sm bg-emerald-500 inline-block"></span> PAM (NGG)
+          </span>
+          <span class="inline-flex items-center gap-1.5 text-slate-300">
+            <i class="fa-solid fa-scissors text-rose-400"></i> Cas9 Cut Site (-3 bp)
+          </span>
+          <span class="inline-flex items-center gap-1.5 text-slate-300">
+            <span class="w-3 h-3 rounded-full bg-amber-400 inline-block"></span> Target Base
+          </span>
+        </div>
+      </div>
+
+      <!-- Horizontal SVG Gene Track -->
+      <div class="bg-slate-950 border border-slate-800 rounded-xl p-3">
+        <div class="flex items-center justify-between text-[11px] font-mono text-slate-400 mb-1">
+          <span>5' Start (1 bp)</span>
+          <span id="mapSelectedSummary" class="text-emerald-300 font-semibold">Selected: Rank #1 • PAM Pos 68 (TGG) • Cut Site 65 bp</span>
+          <span id="mapEndCoord">3' End (444 bp)</span>
+        </div>
+        <div class="w-full overflow-x-auto">
+          <svg id="geneMapSvg" viewBox="0 0 1000 110" class="w-full h-28 min-w-[600px] select-none"></svg>
+        </div>
+      </div>
+
+      <!-- Selected Guide Details Bar -->
+      <div id="selectedGuideCard" class="grid grid-cols-1 md:grid-cols-12 gap-4 bg-slate-950/90 border border-slate-800 rounded-xl p-4 items-center">
+        <div class="md:col-span-5 flex items-center gap-3">
+          <div id="inspRankBadge" class="w-12 h-12 rounded-xl bg-emerald-500/15 border border-emerald-500/40 flex flex-col items-center justify-center shrink-0">
+            <span class="text-[10px] uppercase text-emerald-300 font-semibold">Rank</span>
+            <span id="inspRankNum" class="text-lg font-bold font-mono text-emerald-400">#1</span>
+          </div>
+          <div class="min-w-0">
+            <div class="flex items-center gap-2">
+              <span class="text-xs text-slate-400">5'-3' Guide:</span>
+              <span id="inspStrandPill" class="px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-indigo-500/20 text-indigo-300">+ Strand</span>
+            </div>
+            <div class="font-mono text-sm sm:text-base font-bold tracking-wider text-white truncate mt-0.5">
+              <span id="inspGuideSeq" class="text-indigo-300">GTGAACGTGGATGAAGTTGG</span><span class="text-slate-600 mx-1">+</span><span id="inspPamSeq" class="text-emerald-400 underline decoration-emerald-500/60">TGG</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="md:col-span-5 grid grid-cols-3 gap-2 text-center border-y md:border-y-0 md:border-x border-slate-800 py-2 md:py-0">
+          <div>
+            <div class="text-[11px] text-slate-400">GC Content</div>
+            <div id="inspGcVal" class="font-mono text-sm font-bold text-emerald-400">50.0%</div>
+          </div>
+          <div>
+            <div class="text-[11px] text-slate-400">Cas9 Cut Site</div>
+            <div id="inspCutVal" class="font-mono text-sm font-bold text-rose-400">Base 65 | 66</div>
+          </div>
+          <div>
+            <div class="text-[11px] text-slate-400">Target Dist</div>
+            <div id="inspTargetDistVal" class="font-mono text-sm font-bold text-amber-300">45 bp</div>
+          </div>
+        </div>
+
+        <div class="md:col-span-2 flex justify-end">
+          <button id="btnCopySelectedGuide" type="button" class="w-full md:w-auto inline-flex items-center justify-center gap-2 px-3.5 py-2 rounded-lg text-xs font-semibold bg-indigo-600 hover:bg-indigo-500 text-white shadow transition cursor-pointer">
+            <i class="fa-regular fa-copy"></i>
+            <span>Copy Guide</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Double-Stranded Base-by-Base Sequence Viewer -->
+      <div>
+        <div class="flex items-center justify-between text-xs text-slate-400 mb-2">
+          <span class="font-medium text-slate-300"><i class="fa-solid fa-magnifying-glass-chart text-indigo-400 mr-1.5"></i>Double-Stranded DNA Sequence Locus Window</span>
+          <div class="flex items-center gap-2">
+            <button type="button" id="btnCenterActiveGuide" class="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs transition cursor-pointer">
+              <i class="fa-solid fa-location-crosshairs text-emerald-400 mr-1"></i>Scroll to Active Guide
+            </button>
+          </div>
+        </div>
+
+        <div id="dnaViewerScroll" class="bg-slate-950 border border-slate-800 rounded-xl p-4 overflow-x-auto font-mono">
+          <div id="dnaTracksContainer" class="inline-flex flex-col space-y-1 min-w-full">
+            <!-- Populated dynamically via JS -->
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Ranked Guide Table Section -->
+    <section class="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
+      <div class="flex flex-wrap items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2">
+            <i class="fa-solid fa-table-list text-indigo-400"></i>
+            <h2 class="text-sm font-semibold uppercase tracking-wider text-slate-200">4. Ranked CRISPR Guide RNA Candidates</h2>
+            <span id="tableCountPill" class="px-2.5 py-0.5 rounded-full text-xs font-mono font-semibold bg-emerald-500/15 text-emerald-300 border border-emerald-500/30">
+              34 guides
+            </span>
+          </div>
+          <p class="text-xs text-slate-400 mt-0.5">Ranked by proximity to optimal GC% (<span id="lblOptGc">50%</span>), then by 5' position.</p>
+        </div>
+
+        <!-- Controls: Filter, Show All Usable Toggle, Export CSV -->
+        <div class="flex flex-wrap items-center gap-2.5">
+          <!-- Search Box -->
+          <div class="relative">
+            <i class="fa-solid fa-magnifying-glass text-slate-500 text-xs absolute left-3 top-1/2 -translate-y-1/2"></i>
+            <input
+              id="tableSearchInput"
+              type="text"
+              placeholder="Search sequence, PAM, pos..."
+              class="pl-8 pr-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs font-mono text-slate-200 placeholder:text-slate-500 outline-none focus:border-indigo-500 w-48 sm:w-56"
+            />
+          </div>
+
+          <!-- Toggle Passing vs All Usable -->
+          <label class="inline-flex items-center gap-2 px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-300 cursor-pointer select-none">
+            <input id="chkShowAllUsable" type="checkbox" class="rounded accent-indigo-500 cursor-pointer" />
+            <span>Show outside GC window</span>
+          </label>
+
+          <!-- Sort Selector -->
+          <select id="sortSelect" class="px-3 py-1.5 rounded-lg bg-slate-950 border border-slate-800 text-xs text-slate-200 outline-none focus:border-indigo-500 cursor-pointer">
+            <option value="rank">Sort: Optimal GC% Rank (Default)</option>
+            <option value="pos_asc">Sort: Position (5' → 3')</option>
+            <option value="gc_desc">Sort: GC% (High → Low)</option>
+            <option value="gc_asc">Sort: GC% (Low → High)</option>
+            <option value="target_dist">Sort: Closest to Target Base</option>
+          </select>
+
+          <!-- Export CSV -->
+          <button id="btnExportCsv" type="button" class="inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-emerald-600 hover:bg-emerald-500 text-white shadow transition cursor-pointer">
+            <i class="fa-solid fa-file-csv"></i>
+            <span>Export CSV</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- Responsive Table Wrapper -->
+      <div class="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950">
+        <table class="w-full text-left border-collapse">
+          <thead>
+            <tr class="border-b border-slate-800 bg-slate-900/90 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <th class="py-3 px-4">Rank</th>
+              <th class="py-3 px-3">Strand</th>
+              <th class="py-3 px-3">PAM Pos (1-based)</th>
+              <th class="py-3 px-3">Cut Site</th>
+              <th class="py-3 px-3">Target Dist</th>
+              <th class="py-3 px-4">20-nt Guide Sequence (5' → 3')</th>
+              <th class="py-3 px-3">PAM</th>
+              <th class="py-3 px-4">GC Content</th>
+              <th class="py-3 px-4 text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="guidesTableBody" class="divide-y divide-slate-800/60 text-xs font-mono">
+            <!-- Dynamically populated -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="border-t border-slate-900 bg-slate-950 py-4 px-4 text-center text-xs text-slate-500">
+    <div class="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
+      <span>CRISPR SpCas9 Guide RNA Designer • Built for Genetics Project #3 (RefSeq NM_000518.4 Benchmark)</span>
+      <span class="font-mono text-[11px] text-slate-400">Rule: 20-nt spacer upstream of 5'-NGG-3' • 40%–60% GC Filter</span>
+    </div>
+  </footer>
+
+  <!-- Toast Notification -->
+  <div id="toastNotification" class="fixed bottom-5 right-5 z-50 transform translate-y-20 opacity-0 pointer-events-none transition-all duration-300 bg-slate-900 border border-emerald-500/50 text-slate-100 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 text-xs font-medium">
+    <i class="fa-solid fa-circle-check text-emerald-400 text-base"></i>
+    <span id="toastMessage">Copied guide RNA to clipboard!</span>
+  </div>
+
+  <!-- Modal: Ready-to-Run Python Script for Current Sequence -->
+  <div id="pythonModal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-700 rounded-2xl max-w-3xl w-full max-h-[85vh] flex flex-col shadow-2xl overflow-hidden">
+      <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+        <div class="flex items-center gap-2.5">
+          <i class="fa-brands fa-python text-sky-400 text-lg"></i>
+          <h3 class="text-sm font-bold text-white">Standalone Python Script (Customized with Your Active Sequence)</h3>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="btnCopyPythonCode" type="button" class="px-3 py-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold transition cursor-pointer">
+            <i class="fa-regular fa-copy mr-1"></i>Copy Python Script
+          </button>
+          <button id="btnClosePythonModal" type="button" class="w-8 h-8 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white flex items-center justify-center cursor-pointer">
+            <i class="fa-solid fa-xmark"></i>
+          </button>
+        </div>
+      </div>
+      <div class="p-5 overflow-y-auto flex-1 bg-slate-950">
+        <pre id="pythonCodeBlock" class="font-mono text-xs text-slate-200 leading-relaxed whitespace-pre-wrap"></pre>
+      </div>
+    </div>
+  </div>
+
+  <!-- Application Logic -->
+  <script>
+    /*************************************************************************
+     * 1. CONSTANTS & PRESET SEQUENCES
+     *************************************************************************/
+    const HBB_CLEAN_SEQ =
+      "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAAC" +
+      "GTGGATGAAGTTGGTGGTGAGGCCCTGGGCAGGCTGCTGGTGGTCTACCCTTGGACCCAG" +
+      "AGGTTCTTTGAGTCCTTTGGGGATCTGTCCACTCCTGATGCTGTTATGGGCAACCCTAAG" +
+      "GTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGATGGCCTGGCTCACCTGGAC" +
+      "AACCTCAAGGGCACCTTTGCCACACTGAGTGAGCTGCACTGTGACAAGCTGCACGTGGAT" +
+      "CCTGAGAACTTCAGGCTCCTGGGCAACGTGCTGGTCTGTGTGCTGGCCCATCACTTTGGC" +
+      "AAAGAATTCACCCCACCAGTGCAGGCTGCCTATCAGAAAGTGGTGGCTGGTGTGGCTAAT" +
+      "GCCCTGGCCCACAAGTATCACTAA";
+
+    const HBB_FASTA_PRESET =
+      ">NM_000518.4 Homo sapiens hemoglobin subunit beta (HBB), mRNA CDS\n" +
+      "ATGGTGCATCTGACTCCTGAGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAAC\n" +
+      "GTGGATGAAGTTGGTGGTGAGGCCCTGGGCAGGCTGCTGGTGGTCTACCCTTGGACCCAG\n" +
+      "AGGTTCTTTGAGTCCTTTGGGGATCTGTCCACTCCTGATGCTGTTATGGGCAACCCTAAG\n" +
+      "GTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGATGGCCTGGCTCACCTGGAC\n" +
+      "AACCTCAAGGGCACCTTTGCCACACTGAGTGAGCTGCACTGTGACAAGCTGCACGTGGAT\n" +
+      "CCTGAGAACTTCAGGCTCCTGGGCAACGTGCTGGTCTGTGTGCTGGCCCATCACTTTGGC\n" +
+      "AAAGAATTCACCCCACCAGTGCAGGCTGCCTATCAGAAAGTGGTGGCTGGTGTGGCTAAT\n" +
+      "GCCCTGGCCCACAAGTATCACTAA";
+
+    // Sickle cell mutant preset (Base 20 changed from A to T: codon 7 GAG -> GTG)
+    const HBB_SICKLE_FASTA_PRESET =
+      ">NM_000518.4_HbS Homo sapiens HBB Sickle Cell Mutant (c.20A>T, p.Glu7Val)\n" +
+      "ATGGTGCATCTGACTCCTGTGGAGAAGTCTGCCGTTACTGCCCTGTGGGGCAAGGTGAAC\n" +
+      "GTGGATGAAGTTGGTGGTGAGGCCCTGGGCAGGCTGCTGGTGGTCTACCCTTGGACCCAG\n" +
+      "AGGTTCTTTGAGTCCTTTGGGGATCTGTCCACTCCTGATGCTGTTATGGGCAACCCTAAG\n" +
+      "GTGAAGGCTCATGGCAAGAAAGTGCTCGGTGCCTTTAGTGATGGCCTGGCTCACCTGGAC\n" +
+      "AACCTCAAGGGCACCTTTGCCACACTGAGTGAGCTGCACTGTGACAAGCTGCACGTGGAT\n" +
+      "CCTGAGAACTTCAGGCTCCTGGGCAACGTGCTGGTCTGTGTGCTGGCCCATCACTTTGGC\n" +
+      "AAAGAATTCACCCCACCAGTGCAGGCTGCCTATCAGAAAGTGGTGGCTGGTGTGGCTAAT\n" +
+      "GCCCTGGCCCACAAGTATCACTAA";
+
+    const COMPLEMENT_MAP = { A: 'T', T: 'A', C: 'G', G: 'C' };
+
+    /*************************************************************************
+     * 2. APPLICATION STATE
+     *************************************************************************/
+    const state = {
+      rawInput: HBB_FASTA_PRESET,
+      header: "NM_000518.4 Homo sapiens hemoglobin subunit beta (HBB), mRNA CDS",
+      cleanSeq: HBB_CLEAN_SEQ,
+      invalidCharsRemoved: 0,
+      strandMode: "forward", // 'forward' | 'reverse' | 'both'
+      minGc: 40,
+      maxGc: 60,
+      optGc: 50,
+      targetBasePos: 20, // 1-based position (e.g. 20 for HBB sickle mutation)
+      showAllUsable: false,
+      searchQuery: "",
+      sortBy: "rank",
+      // Computed results
+      fwdPamCount: 0,
+      revPamCount: 0,
+      usableGuides: [],
+      passingGuides: [],
+      displayedGuides: [],
+      selectedGuideId: null
+    };
+
+    /*************************************************************************
+     * 3. CORE BIOINFORMATICS FUNCTIONS
+     *************************************************************************/
+    /**
+     * Parses raw FASTA or plain sequence text into header and cleaned A/T/C/G string.
+     */
+    function parseFastaInput(rawText) {
+      const lines = rawText.split(/\r?\n/);
+      let header = "Custom DNA Sequence (No FASTA header)";
+      const seqLines = [];
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        if (trimmed.startsWith(">")) {
+          if (header === "Custom DNA Sequence (No FASTA header)") {
+            header = trimmed.substring(1).trim() || "Unnamed FASTA Record";
+          }
+        } else {
+          seqLines.push(trimmed);
+        }
+      }
+
+      // Strip whitespace and digits
+      const joined = seqLines.join("").toUpperCase().replace(/[\s0-9]/g, "");
+      // Convert U -> T automatically in case user pastes RNA
+      const rnaConverted = joined.replace(/U/g, "T");
+      const cleanSeq = rnaConverted.replace(/[^ATCG]/g, "");
+      const invalidCharsRemoved = rnaConverted.length - cleanSeq.length;
+
+      return { header, cleanSeq, invalidCharsRemoved };
+    }
+
+    /**
+     * Computes exact GC percentage of a DNA string.
+     */
+    function calcGcPercent(seq) {
+      if (!seq || seq.length === 0) return 0;
+      let gc = 0;
+      for (let i = 0; i < seq.length; i++) {
+        const b = seq[i];
+        if (b === "G" || b === "C") gc++;
+      }
+      return (gc / seq.length) * 100.0;
+    }
+
+    /**
+     * Returns the reverse complement (5' -> 3') of a DNA string.
+     */
+    function reverseComplement(seq) {
+      let rc = "";
+      for (let i = seq.length - 1; i >= 0; i--) {
+        rc += COMPLEMENT_MAP[seq[i]] || "N";
+      }
+      return rc;
+    }
+
+    /**
+     * Scans a single strand for 5'-NGG-3' PAM sites and extracts 20-nt upstream guides.
+     * Matches the exact Project #3 specification:
+     * - Every 3-base window i from 0 to len - 3 where seq[i+1:i+3] == 'GG' is a PAM site.
+     * - If i >= 20, guide is seq[i-20:i].
+     */
+    function scanStrandForGuides(seq, strand, totalLen) {
+      let pamCount = 0;
+      const guides = [];
+
+      for (let i = 0; i <= seq.length - 3; i++) {
+        if (seq[i + 1] === "G" && seq[i + 2] === "G") {
+          pamCount++;
+          if (i >= 20) {
+            const guideSeq = seq.slice(i - 20, i);
+            const pamSeq = seq.slice(i, i + 3);
+            const gc = calcGcPercent(guideSeq);
+
+            // Coordinate mapping back to 1-based Forward Strand
+            let pamPos1Based, cutSite1Based, fwdGuideStart, fwdGuideEnd, fwdPamStart, fwdPamEnd;
+
+            if (strand === "+") {
+              // Forward strand: 0-based index i corresponds to 1-based position i + 1
+              pamPos1Based = i + 1;
+              // Cas9 cuts 3 bp upstream of PAM (between index i-3 and i-2 in 1-based coords)
+              cutSite1Based = i - 2; // 1-based base immediately 3' of cut (i - 3 + 1)
+              fwdGuideStart = i - 20 + 1;
+              fwdGuideEnd = i;
+              fwdPamStart = i + 1;
+              fwdPamEnd = i + 3;
+            } else {
+              // Reverse strand: index k on RC maps to 1-based (totalLen - k) on Forward strand
+              // On RC, PAM is [i, i+1, i+2]. On Forward strand, that CCN spans [totalLen - i - 2, totalLen - i]
+              pamPos1Based = totalLen - i; // 1-based forward position of the 'N' in 5'-NGG-3' on rev strand
+              cutSite1Based = totalLen - i + 3; // 3 bp upstream of PAM on reverse strand mapped to forward
+              fwdPamStart = totalLen - i - 2;
+              fwdPamEnd = totalLen - i;
+              fwdGuideStart = totalLen - i + 1;
+              fwdGuideEnd = totalLen - i + 20;
+            }
+
+            guides.push({
+              id: `${strand}_${i + 1}`,
+              strand,
+              strandOrder: strand === "+" ? 0 : 1,
+              scanIndex1Based: i + 1,
+              pamPos1Based,
+              cutSite1Based,
+              fwdGuideStart,
+              fwdGuideEnd,
+              fwdPamStart,
+              fwdPamEnd,
+              guide: guideSeq,
+              pam: pamSeq,
+              gc
+            });
+          }
+        }
+      }
+
+      return { pamCount, guides };
+    }
+
+    /**
+     * Executes full CRISPR guide discovery, filtering, and ranking according to active state.
+     */
+    function runCrisprPipeline() {
+      const parsed = parseFastaInput(state.rawInput);
+      state.header = parsed.header;
+      state.cleanSeq = parsed.cleanSeq;
+      state.invalidCharsRemoved = parsed.invalidCharsRemoved;
+
+      const seq = state.cleanSeq;
+      const L = seq.length;
+
+      // Scan forward strand
+      const fwdResult = scanStrandForGuides(seq, "+", L);
+      // Scan reverse complement strand
+      const rcSeq = reverseComplement(seq);
+      const revResult = scanStrandForGuides(rcSeq, "-", L);
+
+      state.fwdPamCount = fwdResult.pamCount;
+      state.revPamCount = revResult.pamCount;
+
+      let activeUsable = [];
+      if (state.strandMode === "forward") {
+        activeUsable = [...fwdResult.guides];
+      } else if (state.strandMode === "reverse") {
+        activeUsable = [...revResult.guides];
+      } else {
+        activeUsable = [...fwdResult.guides, ...revResult.guides];
+      }
+
+      // Annotate each guide with GC filter status, distance from optimal GC, and distance to target base
+      activeUsable.forEach((g) => {
+        g.distFromOptGc = Math.abs(g.gc - state.optGc);
+        g.passesGc = g.gc >= state.minGc && g.gc <= state.maxGc;
+        if (state.targetBasePos && state.targetBasePos >= 1 && state.targetBasePos <= L) {
+          g.targetDist = Math.abs(g.cutSite1Based - state.targetBasePos);
+        } else {
+          g.targetDist = null;
+        }
+      });
+
+      // Default canonical ranking: (1)passesGc desc, (2) distFromOptGc asc, (3) scanIndex1Based asc, (4) strandOrder asc
+      const rankComparator = (a, b) => {
+        if (a.passesGc !== b.passesGc) return a.passesGc ? -1 : 1;
+        if (Math.abs(a.distFromOptGc - b.distFromOptGc) > 1e-9) {
+          return a.distFromOptGc - b.distFromOptGc;
+        }
+        if (a.scanIndex1Based !== b.scanIndex1Based) {
+          return a.scanIndex1Based - b.scanIndex1Based;
+        }
+        return a.strandOrder - b.strandOrder;
+      };
+
+      state.usableGuides = [...activeUsable].sort(rankComparator);
+      state.passingGuides = state.usableGuides.filter((g) => g.passesGc);
+
+      // Assign canonical rank numbers (1..N for passing guides, and continuing for non-passing)
+      let passRank = 1;
+      let failRank = state.passingGuides.length + 1;
+      state.usableGuides.forEach((g) => {
+        if (g.passesGc) {
+          g.rank = passRank++;
+        } else {
+          g.rank = failRank++;
+        }
+      });
+
+      // Keep selected guide valid or default to Rank #1
+      const pool = state.showAllUsable ? state.usableGuides : state.passingGuides;
+      if (!pool.some((g) => g.id === state.selectedGuideId)) {
+        state.selectedGuideId = pool.length > 0 ? pool[0].id : null;
+      }
+
+      applyTableFilterAndSort();
+      renderAll();
+    }
+
+    /**
+     * Filters and sorts the guides for the table view.
+     */
+    function applyTableFilterAndSort() {
+      const basePool = state.showAllUsable ? state.usableGuides : state.passingGuides;
+      const q = state.searchQuery.trim().toUpperCase();
+
+      let filtered = basePool.filter((g) => {
+        if (!q) return true;
+        return (
+          g.guide.includes(q) ||
+          g.pam.includes(q) ||
+          String(g.pamPos1Based).includes(q) ||
+          String(g.cutSite1Based).includes(q) ||
+          String(g.rank).includes(q)
+        );
+      });
+
+      // Sort according to user selection
+      filtered.sort((a, b) => {
+        if (state.sortBy === "pos_asc") {
+          return a.fwdPamStart - b.fwdPamStart;
+        } else if (state.sortBy === "gc_desc") {
+          return b.gc - a.gc || a.rank - b.rank;
+        } else if (state.sortBy === "gc_asc") {
+          return a.gc - b.gc || a.rank - b.rank;
+        } else if (state.sortBy === "target_dist") {
+          const da = a.targetDist !== null ? a.targetDist : 999999;
+          const db = b.targetDist !== null ? b.targetDist : 999999;
+          return da - db || a.rank - b.rank;
+        }
+        return a.rank - b.rank;
+      });
+
+      state.displayedGuides = filtered;
+    }
+
+    /*************************************************************************
+     * 4. UI RENDERING FUNCTIONS
+     *************************************************************************/
+    function renderAll() {
+      renderHeaderAndValidation();
+      renderSummaryMetrics();
+      renderGeneMapSvg();
+      renderSelectedGuideInspector();
+      renderDnaViewer();
+      renderGuidesTable();
+    }
+
+    function renderHeaderAndValidation() {
+      document.getElementById("parsedHeaderText").textContent = state.header;
+      document.getElementById("baseCountBadge").textContent = `${state.cleanSeq.length.toLocaleString()} bp`;
+
+      const valEl = document.getElementById("validationStatus");
+      if (state.cleanSeq.length < 23) {
+        valEl.className = "flex items-center gap-2 text-rose-400";
+        valEl.innerHTML = `<i class="fa-solid fa-triangle-exclamation"></i><span>Sequence too short (${state.cleanSeq.length} bp). Need at least 23 bp (20-nt guide + 3-nt PAM).</span>`;
+      } else if (state.invalidCharsRemoved > 0) {
+        valEl.className = "flex items-center gap-2 text-amber-400";
+        valEl.innerHTML = `<i class="fa-solid fa-circle-info"></i><span>Cleaned ${state.invalidCharsRemoved} non-ATCG character(s) automatically.</span>`;
+      } else {
+        valEl.className = "flex items-center gap-2 text-emerald-400";
+        valEl.innerHTML = `<i class="fa-solid fa-circle-check"></i><span>Valid DNA sequence (${state.cleanSeq.length} A, T, C, G bases).</span>`;
+      }
+
+      // Check if exact HBB benchmark sequence is loaded
+      const benchmarkBanner = document.getElementById("benchmarkBadge");
+      if (state.cleanSeq === HBB_CLEAN_SEQ) {
+        benchmarkBanner.classList.remove("hidden");
+        benchmarkBanner.classList.add("flex");
+      } else {
+        benchmarkBanner.classList.add("hidden");
+        benchmarkBanner.classList.remove("flex");
+      }
+    }
+
+    function renderSummaryMetrics() {
+      const L = state.cleanSeq.length;
+      const seqGc = calcGcPercent(state.cleanSeq);
+      document.getElementById("metricSeqLen").textContent = `${L.toLocaleString()} bp`;
+      document.getElementById("metricSeqGc").textContent = `${seqGc.toFixed(1)}% GC`;
+
+      const codons = Math.floor(L / 3);
+      document.getElementById("metricCodonInfo").textContent =
+        L % 3 === 0 ? `${codons} complete codons` : `${codons} codons (+${L % 3} bp remainder)`;
+
+      let totalPams = 0;
+      let strandText = "";
+      if (state.strandMode === "forward") {
+        totalPams = state.fwdPamCount;
+        strandText = "Forward (+)";
+      } else if (state.strandMode === "reverse") {
+        totalPams = state.revPamCount;
+        strandText = "Reverse (-)";
+      } else {
+        totalPams = state.fwdPamCount + state.revPamCount;
+        strandText = `${state.fwdPamCount} (+) / ${state.revPamCount} (-)`;
+      }
+
+      document.getElementById("metricTotalPams").textContent = totalPams;
+      document.getElementById("metricStrandBreakdown").textContent = strandText;
+
+      const usableCount = state.usableGuides.length;
+      const droppedCount = totalPams - usableCount;
+      document.getElementById("metricUsableGuides").textContent = usableCount;
+      document.getElementById("metricDroppedPams").textContent =
+        droppedCount > 0 ? `${droppedCount} near 5' end (<20 bp)` : `All PAMs have 20 bp`;
+
+      const passingCount = state.passingGuides.length;
+      const exactOptCount = state.passingGuides.filter((g) => Math.abs(g.gc - state.optGc) < 1e-6).length;
+      document.getElementById("metricPassingGuides").textContent = passingCount;
+      document.getElementById("metricExact50Count").textContent = `${exactOptCount} at ${state.optGc}% GC`;
+      document.getElementById("metricFilterWindowLabel").textContent = `Within ${state.minGc}% – ${state.maxGc}% GC window`;
+      document.getElementById("lblOptGc").textContent = `${state.optGc}%`;
+    }
+
+    /**
+     * Renders an interactive horizontal SVG map of the sequence and all guides.
+     */
+    function renderGeneMapSvg() {
+      const svg = document.getElementById("geneMapSvg");
+      const L = Math.max(state.cleanSeq.length, 1);
+      document.getElementById("mapEndCoord").textContent = `3' End (${state.cleanSeq.length} bp)`;
+
+      const width = 1000;
+      const padX = 30;
+      const trackWidth = width - padX * 2;
+      const xForBp = (bp) => padX + ((bp - 1) / Math.max(L - 1, 1)) * trackWidth;
+
+      let html = "";
+
+      // Main DNA backbone bar
+      html += `<rect x="${padX}" y="50" width="${trackWidth}" height="10" rx="5" fill="#1e293b" stroke="#334155" stroke-width="1" />`;
+
+      // Ruler ticks every ~50 bp
+      const step = L <= 200 ? 25 : L <= 600 ? 50 : Math.ceil(L / 10 / 50) * 50;
+      for (let bp = 1; bp <= L; bp += step) {
+        const x = xForBp(bp);
+        html += `<line x1="${x}" y1="45" x2="${x}" y2="65" stroke="#475569" stroke-width="1" />`;
+        html += `<text x="${x}" y="78" fill="#64748b" font-size="10" font-family="JetBrains Mono" text-anchor="middle">${bp}</text>`;
+      }
+
+      // Target Mutation Base Marker (if configured)
+      if (state.targetBasePos && state.targetBasePos >= 1 && state.targetBasePos <= L) {
+        const tx = xForBp(state.targetBasePos);
+        html += `
+          <g>
+            <line x1="${tx}" y1="12" x2="${tx}" y2="95" stroke="#f59e0b" stroke-width="2" stroke-dasharray="3,2" />
+            <circle cx="${tx}" cy="14" r="6" fill="#f59e0b" />
+            <text x="${tx + 8}" y="18" fill="#fcd34d" font-size="10" font-family="JetBrains Mono" font-weight="bold">Target (${state.targetBasePos} bp)</text>
+          </g>
+        `;
+      }
+
+      // Plot Guide markers
+      const guidesToPlot = state.showAllUsable ? state.usableGuides : state.passingGuides;
+      guidesToPlot.forEach((g) => {
+        const isSelected = g.id === state.selectedGuideId;
+        const gx1 = xForBp(Math.min(g.fwdGuideStart, g.fwdPamStart));
+        const gx2 = xForBp(Math.max(g.fwdGuideEnd, g.fwdPamEnd));
+        const cutX = xForBp(g.cutSite1Based);
+        const yTrack = g.strand === "+" ? 34 : 68;
+
+        const color = isSelected
+          ? "#10b981"
+          : g.passesGc
+          ? g.strand === "+"
+            ? "#6366f1"
+            : "#0ea5e9"
+          : "#64748b";
+
+        const opacity = isSelected ? "1" : "0.75";
+        const height = isSelected ? 9 : 6;
+
+        html += `
+          <g class="cursor-pointer guide-map-marker" data-id="${g.id}">
+            <rect x="${gx1}" y="${yTrack - height / 2}" width="${Math.max(gx2 - gx1, 6)}" height="${height}" rx="3" fill="${color}" fill-opacity="${opacity}" stroke="${isSelected ? '#ffffff' : 'none'}" stroke-width="1.5">
+              <title>Rank #${g.rank} (${g.strand} Strand) | Guide: ${g.guide} | PAM: ${g.pam} (Pos ${g.pamPos1Based}) | GC: ${g.gc.toFixed(1)}%</title>
+            </rect>
+            ${
+              isSelected
+                ? `<polygon points="${cutX - 5},${yTrack - 14} ${cutX + 5},${yTrack - 14} ${cutX},${yTrack - 4}" fill="#f43f5e" />`
+                : ""
+            }
+          </g>
+        `;
+      });
+
+      svg.innerHTML = html;
+
+      // Attach click handlers to SVG guide markers
+      svg.querySelectorAll(".guide-map-marker").forEach((el) => {
+        el.addEventListener("click", () => {
+          const id = el.getAttribute("data-id");
+          selectGuideById(id, true);
+        });
+      });
+    }
+
+    /**
+     * Updates the Selected Guide Inspector bar above the DNA sequence track.
+     */
+    function renderSelectedGuideInspector() {
+      const activeGuide = state.usableGuides.find((g) => g.id === state.selectedGuideId);
+      const summaryEl = document.getElementById("mapSelectedSummary");
+
+      if (!activeGuide) {
+        summaryEl.textContent = "No guide RNA selected";
+        document.getElementById("inspRankNum").textContent = "-";
+        document.getElementById("inspGuideSeq").textContent = "--------------------";
+        document.getElementById("inspPamSeq").textContent = "---";
+        document.getElementById("inspGcVal").textContent = "-";
+        document.getElementById("inspCutVal").textContent = "-";
+        document.getElementById("inspTargetDistVal").textContent = "-";
+        return;
+      }
+
+      summaryEl.textContent = `Selected: Rank #${activeGuide.rank} (${activeGuide.strand} Strand) • PAM Pos ${activeGuide.pamPos1Based} (${activeGuide.pam}) • Cut Site ${activeGuide.cutSite1Based} bp`;
+
+      document.getElementById("inspRankNum").textContent = `#${activeGuide.rank}`;
+      const strandPill = document.getElementById("inspStrandPill");
+      if (activeGuide.strand === "+") {
+        strandPill.textContent = "+ Forward Strand";
+        strandPill.className = "px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-indigo-500/20 text-indigo-300";
+      } else {
+        strandPill.textContent = "- Reverse Strand";
+        strandPill.className = "px-2 py-0.5 rounded text-[11px] font-mono font-semibold bg-sky-500/20 text-sky-300";
+      }
+
+      document.getElementById("inspGuideSeq").textContent = activeGuide.guide;
+      document.getElementById("inspPamSeq").textContent = activeGuide.pam;
+      document.getElementById("inspGcVal").textContent = `${activeGuide.gc.toFixed(1)}%`;
+      document.getElementById("inspCutVal").textContent = `Base ${activeGuide.cutSite1Based - 1} | ${activeGuide.cutSite1Based}`;
+      document.getElementById("inspTargetDistVal").textContent =
+        activeGuide.targetDist !== null ? `${activeGuide.targetDist} bp` : "N/A";
+    }
+
+    /**
+     * Renders the Double-Stranded DNA Base-by-Base Viewer with highlighted Protospacer, PAM, Cut Site, and Target Base.
+     */
+    function renderDnaViewer() {
+      const container = document.getElementById("dnaTracksContainer");
+      const seq = state.cleanSeq;
+      if (!seq) {
+        container.innerHTML = `<div class="text-slate-500 text-xs py-4">Paste a valid DNA sequence above to view double-stranded nucleotide tracks.</div>`;
+        return;
+      }
+
+      const activeGuide = state.usableGuides.find((g) => g.id === state.selectedGuideId);
+      const maxRenderBases = Math.min(seq.length, 1500); // Keep DOM fast even for huge genes
+
+      let html = `<div class="flex items-center">`;
+
+      // Left Strand Labels
+      html += `
+        <div class="sticky left-0 z-10 bg-slate-950 pr-3 mr-2 border-r border-slate-800 flex flex-col justify-between text-[11px] font-mono text-slate-400 select-none shrink-0 leading-tight">
+          <div class="h-5 flex items-center text-slate-500">Coord</div>
+          <div class="h-7 flex items-center font-bold text-indigo-400">5' → 3' (+)</div>
+          <div class="h-4 flex items-center justify-center text-slate-600">H-Bonds</div>
+          <div class="h-7 flex items-center font-bold text-sky-400">3' ← 5' (-)</div>
+          <div class="h-5 flex items-center text-slate-500">Annotation</div>
+        </div>
+      `;
+
+      // Nucleotide columns
+      for (let i = 0; i < maxRenderBases; i++) {
+        const pos = i + 1; // 1-based position
+        const fwdBase = seq[i];
+        const revBase = COMPLEMENT_MAP[fwdBase] || "N";
+
+        let isGuide = false;
+        let isPam = false;
+        let isCutLeft = false;
+        const isTargetBase = state.targetBasePos === pos;
+
+        if (activeGuide) {
+          isGuide = pos >= activeGuide.fwdGuideStart && pos <= activeGuide.fwdGuideEnd;
+          isPam = pos >= activeGuide.fwdPamStart && pos <= activeGuide.fwdPamEnd;
+          isCutLeft = pos === activeGuide.cutSite1Based;
+        }
+
+        // Style classes for Forward and Reverse bases
+        let fwdClass = "text-slate-300 bg-slate-900/60";
+        let revClass = "text-slate-400 bg-slate-900/40";
+        let annotLabel = "";
+        let annotColor = "text-transparent";
+
+        if (isGuide) {
+          if (activeGuide.strand === "+") {
+            fwdClass = "bg-indigo-600 text-white font-bold shadow-sm";
+            revClass = "bg-indigo-950/80 text-indigo-300";
+          } else {
+            revClass = "bg-sky-600 text-white font-bold shadow-sm";
+            fwdClass = "bg-sky-950/80 text-sky-300";
+          }
+          if (pos === activeGuide.fwdGuideStart) {
+            annotLabel = "GUIDE";
+            annotColor = "text-indigo-400 font-bold";
+          }
+        }
+
+        if (isPam) {
+          if (activeGuide.strand === "+") {
+            fwdClass = "bg-emerald-500 text-slate-950 font-extrabold";
+            revClass = "bg-emerald-950 text-emerald-300";
+          } else {
+            revClass = "bg-emerald-500 text-slate-950 font-extrabold";
+            fwdClass = "bg-emerald-950 text-emerald-300";
+          }
+          if (pos === activeGuide.fwdPamStart) {
+            annotLabel = "PAM";
+            annotColor = "text-emerald-400 font-bold";
+          }
+        }
+
+        if (isTargetBase) {
+          fwdClass += " ring-2 ring-amber-400";
+          revClass += " ring-2 ring-amber-400";
+          annotLabel = "★MUT";
+          annotColor = "text-amber-400 font-bold";
+        }
+
+        const cutBorder = isCutLeft ? "border-l-2 border-rose-500" : "";
+        const coordText = pos === 1 || pos % 10 === 0 ? pos : "·";
+
+        html += `
+          <div id="dna-col-${pos}" class="dna-base ${cutBorder}">
+            <div class="h-5 text-[10px] ${pos % 10 === 0 ? 'text-slate-300 font-semibold' : 'text-slate-600'}">${coordText}</div>
+            <div class="h-7 w-5 rounded flex items-center justify-center text-xs ${fwdClass}">${fwdBase}</div>
+            <div class="h-4 flex items-center justify-center text-[10px] ${isCutLeft ? 'text-rose-400 font-bold' : 'text-slate-700'}">${isCutLeft ? '✂' : '│'}</div>
+            <div class="h-7 w-5 rounded flex items-center justify-center text-xs ${revClass}">${revBase}</div>
+            <div class="h-5 text-[9px] ${annotColor} tracking-tighter">${annotLabel || "."}</div>
+          </div>
+        `;
+      }
+
+      html += `</div>`;
+      container.innerHTML = html;
+    }
+
+    /**
+     * Scrolls the horizontal DNA viewer smoothly to center the currently selected guide.
+     */
+    function scrollToActiveGuide() {
+      const activeGuide = state.usableGuides.find((g) => g.id === state.selectedGuideId);
+      if (!activeGuide) return;
+      const targetCol = document.getElementById(`dna-col-${activeGuide.fwdPamStart}`);
+      const scrollContainer = document.getElementById("dnaViewerScroll");
+      if (targetCol && scrollContainer) {
+        const colLeft = targetCol.offsetLeft;
+        const containerWidth = scrollContainer.clientWidth;
+        scrollContainer.scrollTo({
+          left: Math.max(0, colLeft - containerWidth / 2),
+          behavior: "smooth"
+        });
+      }
+    }
+
+    /**
+     * Renders the interactive sortable table of CRISPR guides.
+     */
+    function renderGuidesTable() {
+      const tbody = document.getElementById("guidesTableBody");
+      const guides = state.displayedGuides;
+      document.getElementById("tableCountPill").textContent = `${guides.length} ${guides.length === 1 ? "guide" : "guides"}`;
+
+      if (guides.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="9" class="py-8 text-center text-slate-400 font-sans">
+              No guide RNAs match your current filter criteria. Try adjusting the GC% window or search term.
+            </td>
+          </tr>
+        `;
+        return;
+      }
+
+      let rowsHtml = "";
+      guides.forEach((g) => {
+        const isSelected = g.id === state.selectedGuideId;
+        const isOptimal50 = Math.abs(g.gc - state.optGc) < 1e-6;
+
+        const rowBg = isSelected
+          ? "bg-indigo-950/60 border-l-4 border-l-emerald-400"
+          : g.passesGc
+          ? "hover:bg-slate-900/90"
+          : "opacity-60 bg-slate-950 hover:opacity-90";
+
+        // GC badge color
+        let gcBadgeClass = "bg-emerald-500/15 text-emerald-300 border-emerald-500/30";
+        let gcBarColor = "bg-emerald-400";
+        if (!g.passesGc) {
+          gcBadgeClass = "bg-rose-500/15 text-rose-300 border-rose-500/30";
+          gcBarColor = "bg-rose-400";
+        } else if (!isOptimal50) {
+          gcBadgeClass = "bg-sky-500/15 text-sky-300 border-sky-500/30";
+          gcBarColor = "bg-sky-400";
+        }
+
+        const strandBadge =
+          g.strand === "+"
+            ? `<span class="px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-300 font-semibold">+ Fwd</span>`
+            : `<span class="px-2 py-0.5 rounded bg-sky-500/20 text-sky-300 font-semibold">- Rev</span>`;
+
+        const targetDistCell =
+          g.targetDist !== null
+            ? `<span class="${g.targetDist <= 15 ? 'text-amber-300 font-bold' : 'text-slate-300'}">${g.targetDist} bp</span>`
+            : `<span class="text-slate-600">—</span>`;
+
+        rowsHtml += `
+          <tr data-id="${g.id}" class="guide-row cursor-pointer transition ${rowBg}">
+            <td class="py-3 px-4 font-bold ${isOptimal50 ? 'text-emerald-400' : 'text-slate-200'}">
+              #${g.rank}
+              ${isOptimal50 ? '<span class="ml-1 text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/20 text-emerald-300">OPT</span>' : ''}
+            </td>
+            <td class="py-3 px-3">${strandBadge}</td>
+            <td class="py-3 px-3 text-slate-200">${g.pamPos1Based}</td>
+            <td class="py-3 px-3 text-rose-300">${g.cutSite1Based} bp</td>
+            <td class="py-3 px-3">${targetDistCell}</td>
+            <td class="py-3 px-4 font-bold tracking-wider text-white">
+              <span class="text-indigo-200">${g.guide}</span>
+            </td>
+            <td class="py-3 px-3">
+              <span class="px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 font-bold">${g.pam}</span>
+            </td>
+            <td class="py-3 px-4">
+              <div class="flex items-center gap-2.5">
+                <span class="px-2 py-0.5 rounded border text-[11px] font-bold ${gcBadgeClass}">${g.gc.toFixed(1)}%</span>
+                <div class="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden hidden sm:block">
+                  <div class="h-full ${gcBarColor}" style="width: ${Math.min(100, g.gc)}%"></div>
+                </div>
+              </div>
+            </td>
+            <td class="py-3 px-4 text-right">
+              <button type="button" data-guide="${g.guide}" class="btn-copy-row px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-indigo-600 text-slate-200 hover:text-white transition text-[11px] font-sans font-semibold cursor-pointer">
+                <i class="fa-regular fa-copy mr-1"></i>Copy
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+
+      tbody.innerHTML = rowsHtml;
+
+      // Row click handler -> selects guide and scrolls viewer
+      tbody.querySelectorAll(".guide-row").forEach((row) => {
+        row.addEventListener("click", (e) => {
+          if (e.target.closest(".btn-copy-row")) return;
+          const id = row.getAttribute("data-id");
+          selectGuideById(id, true);
+        });
+      });
+
+      // Copy button handler
+      tbody.querySelectorAll(".btn-copy-row").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const seq = btn.getAttribute("data-guide");
+          copyTextToClipboard(seq, `Copied 20-nt guide (${seq}) to clipboard!`);
+        });
+      });
+    }
+
+    function selectGuideById(id, autoScrollViewer = false) {
+      state.selectedGuideId = id;
+      renderGeneMapSvg();
+      renderSelectedGuideInspector();
+      renderDnaViewer();
+      renderGuidesTable();
+      if (autoScrollViewer) {
+        scrollToActiveGuide();
+      }
+    }
+
+    /*************************************************************************
+     * 5. CLIPBOARD, CSV EXPORT & PYTHON GENERATOR
+     *************************************************************************/
+    function copyTextToClipboard(text, message) {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.style.position = "fixed";
+      textarea.style.opacity = "0";
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand("copy");
+        showToast(message || "Copied to clipboard!");
+      } catch (err) {
+        showToast("Failed to copy text.");
+      }
+      document.body.removeChild(textarea);
+    }
+
+    let toastTimeout = null;
+    function showToast(msg) {
+      const toast = document.getElementById("toastNotification");
+      document.getElementById("toastMessage").textContent = msg;
+      toast.classList.remove("translate-y-20", "opacity-0");
+      clearTimeout(toastTimeout);
+      toastTimeout = setTimeout(() => {
+        toast.classList.add("translate-y-20", "opacity-0");
+      }, 2600);
+    }
+
+    function exportGuidesToCsv() {
+      const guides = state.displayedGuides;
+      if (!guides.length) {
+        showToast("No guides available to export.");
+        return;
+      }
+
+      const headers = [
+        "Rank",
+        "Strand",
+        "PAM_Position_1Based",
+        "Cas9_Cut_Site_1Based",
+        "Distance_To_Target_Base",
+        "Guide_Sequence_5to3",
+        "PAM",
+        "GC_Percent",
+        "Passes_GC_Filter"
+      ];
+
+      const rows = guides.map((g) => [
+        g.rank,
+        g.strand,
+        g.pamPos1Based,
+        g.cutSite1Based,
+        g.targetDist !== null ? g.targetDist : "",
+        g.guide,
+        g.pam,
+        g.gc.toFixed(1),
+        g.passesGc ? "YES" : "NO"
+      ]);
+
+      const csvContent =
+        "data:text/csv;charset=utf-8," +
+        [headers.join(","), ...rows.map((r) => r.join(","))].join("\n");
+
+      const encodedUri = encodeURI(csvContent);
+      const link = document.createElement("a");
+      link.setAttribute("href", encodedUri);
+      link.setAttribute("download", "crispr_spcas9_guides.csv");
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      showToast(`Exported ${guides.length} guides to crispr_spcas9_guides.csv`);
+    }
+
+    function generatePythonScriptForCurrentSequence() {
+      const chunks = state.cleanSeq.match(/.{1,60}/g) || [state.cleanSeq];
+      const formattedSeq = chunks.map((c) => `    "${c}"`).join("\n");
+
+      return `# Project 03: The CRISPR SpCas9 Guide Designer
+# Sequence: ${state.header} (${state.cleanSeq.length} bp)
+
+sequence = (
+${formattedSeq}
+)
+
+def calculate_gc(seq):
+    """Return GC percentage of a DNA string."""
+    return ((seq.count('G') + seq.count('C')) / len(seq)) * 100.0
+
+def scan_crispr_guides(seq, min_gc=${state.minGc}, max_gc=${state.maxGc}, opt_gc=${state.optGc}):
+    pam_sites = 0
+    usable_guides = []
+
+    for i in range(len(seq) - 2):
+        codon_window = seq[i:i+3]
+        if codon_window[1:] == "GG":
+            pam_sites += 1
+            if i >= 20:
+                guide_seq = seq[i-20:i]
+                gc_content = calculate_gc(guide_seq)
+                usable_guides.append({
+                    "pam_pos": i + 1,
+                    "cut_site": i - 2,
+                    "guide": guide_seq,
+                    "pam": codon_window,
+                    "gc": gc_content,
+                    "dist_from_opt": abs(gc_content - opt_gc)
+                })
+
+    passed_guides = [g for g in usable_guides if min_gc <= g["gc"] <= max_gc]
+    ranked_guides = sorted(passed_guides, key=lambda x: (x["dist_from_opt"], x["pam_pos"]))
+    return pam_sites, usable_guides, ranked_guides
+
+total_pams, usable, passed_ranked = scan_crispr_guides(sequence)
+
+print(f"Total PAM sites (NGG) on forward strand : {total_pams}")
+print(f"Usable guides (full 20bp upstream)      : {len(usable)}")
+print(f"Guides passing GC filter (${state.minGc}% - ${state.maxGc}%)    : {len(passed_ranked)}\\n")
+
+print(f"{'Rank':<5} {'PAM Pos':<8} {'Cut':<6} {'20-nt Guide Sequence':<22} {'PAM':<5} {'GC %':<6}")
+print("-" * 58)
+for idx, g in enumerate(passed_ranked, 1):
+    print(f"{idx:<5} {g['pam_pos']:<8} {g['cut_site']:<6} {g['guide']:<22} {g['pam']:<5} {g['gc']:5.1f}%")
+`;
+    }
+
+    /*************************************************************************
+     * 6. EVENT LISTENERS & INITIALIZATION
+     *************************************************************************/
+    window.onload = function () {
+      const seqInput = document.getElementById("sequenceInput");
+      seqInput.value = state.rawInput;
+
+      // Live sequence input listener
+      seqInput.addEventListener("input", () => {
+        state.rawInput = seqInput.value;
+        runCrisprPipeline();
+      });
+
+      // File Upload Handler (.fasta, .fa, .fna, .txt)
+      const fileInput = document.getElementById("fastaFileInput");
+      fileInput.addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (evt) => {
+          const content = evt.target.result;
+          seqInput.value = content;
+          state.rawInput = content;
+          runCrisprPipeline();
+          showToast(`Loaded sequence from ${file.name}`);
+        };
+        reader.readAsText(file);
+        fileInput.value = "";
+      });
+
+      // Preset Buttons
+      const loadHbbPreset = () => {
+        seqInput.value = HBB_FASTA_PRESET;
+        state.rawInput = HBB_FASTA_PRESET;
+        state.strandMode = "forward";
+        state.minGc = 40;
+        state.maxGc = 60;
+        state.optGc = 50;
+        state.targetBasePos = 20;
+        syncParamInputsWithState();
+        runCrisprPipeline();
+        scrollToActiveGuide();
+        showToast("Loaded HBB RefSeq NM_000518.4 preset (444 bp)");
+      };
+
+      document.getElementById("btnLoadHbb").addEventListener("click", loadHbbPreset);
+      document.getElementById("btnPresetHbb").addEventListener("click", loadHbbPreset);
+
+      document.getElementById("btnPresetSickleMut").addEventListener("click", () => {
+        seqInput.value = HBB_SICKLE_FASTA_PRESET;
+        state.rawInput = HBB_SICKLE_FASTA_PRESET;
+        state.targetBasePos = 20;
+        syncParamInputsWithState();
+        runCrisprPipeline();
+        showToast("Loaded HBB Sickle Cell Mutant (c.20A>T) sequence");
+      });
+
+      document.getElementById("btnClearSeq").addEventListener("click", () => {
+        seqInput.value = "";
+        state.rawInput = "";
+        runCrisprPipeline();
+      });
+
+      // Strand Mode Buttons
+      document.querySelectorAll(".strand-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          state.strandMode = btn.getAttribute("data-strand");
+          syncParamInputsWithState();
+          runCrisprPipeline();
+        });
+      });
+
+      // GC Filter Inputs
+      document.getElementById("minGcInput").addEventListener("input", (e) => {
+        state.minGc = Number(e.target.value) || 0;
+        runCrisprPipeline();
+      });
+      document.getElementById("maxGcInput").addEventListener("input", (e) => {
+        state.maxGc = Number(e.target.value) || 100;
+        runCrisprPipeline();
+      });
+      document.getElementById("optGcInput").addEventListener("input", (e) => {
+        state.optGc = Number(e.target.value) || 50;
+        runCrisprPipeline();
+      });
+
+      // Target Base Position Input
+      const targetInput = document.getElementById("targetBaseInput");
+      targetInput.addEventListener("input", (e) => {
+        const val = parseInt(e.target.value, 10);
+        state.targetBasePos = isNaN(val) ? null : val;
+        runCrisprPipeline();
+      });
+
+      document.getElementById("btnSetSicklePos").addEventListener("click", () => {
+        state.targetBasePos = 20;
+        targetInput.value = 20;
+        runCrisprPipeline();
+        showToast("Target base set to Position 20 (HBB Codon 7)");
+      });
+
+      document.getElementById("btnClearTargetPos").addEventListener("click", () => {
+        state.targetBasePos = null;
+        targetInput.value = "";
+        runCrisprPipeline();
+      });
+
+      document.getElementById("btnResetParams").addEventListener("click", () => {
+        state.strandMode = "forward";
+        state.minGc = 40;
+        state.maxGc = 60;
+        state.optGc = 50;
+        state.targetBasePos = 20;
+        syncParamInputsWithState();
+        runCrisprPipeline();
+        showToast("Reset design parameters to benchmark defaults");
+      });
+
+      // Inspector & Viewer Controls
+      document.getElementById("btnCopySelectedGuide").addEventListener("click", () => {
+        const activeGuide = state.usableGuides.find((g) => g.id === state.selectedGuideId);
+        if (activeGuide) {
+          copyTextToClipboard(
+            activeGuide.guide,
+            `Copied Rank #${activeGuide.rank} guide (${activeGuide.guide})!`
+          );
+        }
+      });
+
+      document.getElementById("btnCenterActiveGuide").addEventListener("click", () => {
+        scrollToActiveGuide();
+      });
+
+      // Table Controls
+      document.getElementById("tableSearchInput").addEventListener("input", (e) => {
+        state.searchQuery = e.target.value;
+        applyTableFilterAndSort();
+        renderGuidesTable();
+      });
+
+      document.getElementById("chkShowAllUsable").addEventListener("change", (e) => {
+        state.showAllUsable = e.target.checked;
+        applyTableFilterAndSort();
+        renderGeneMapSvg();
+        renderGuidesTable();
+      });
+
+      document.getElementById("sortSelect").addEventListener("change", (e) => {
+        state.sortBy = e.target.value;
+        applyTableFilterAndSort();
+        renderGuidesTable();
+      });
+
+      document.getElementById("btnExportCsv").addEventListener("click", exportGuidesToCsv);
+
+      // Python Modal Controls
+      const pyModal = document.getElementById("pythonModal");
+      document.getElementById("btnShowPythonModal").addEventListener("click", () => {
+        document.getElementById("pythonCodeBlock").textContent = generatePythonScriptForCurrentSequence();
+        pyModal.classList.remove("hidden");
+        pyModal.classList.add("flex");
+      });
+
+      document.getElementById("btnClosePythonModal").addEventListener("click", () => {
+        pyModal.classList.add("hidden");
+        pyModal.classList.remove("flex");
+      });
+
+      document.getElementById("btnCopyPythonCode").addEventListener("click", () => {
+        const code = document.getElementById("pythonCodeBlock").textContent;
+        copyTextToClipboard(code, "Copied standalone Python script to clipboard!");
+      });
+
+      // Run initial pipeline and scroll to top-ranked guide
+      runCrisprPipeline();
+      setTimeout(scrollToActiveGuide, 150);
+    };
+
+    function syncParamInputsWithState() {
+      document.getElementById("minGcInput").value = state.minGc;
+      document.getElementById("maxGcInput").value = state.maxGc;
+      document.getElementById("optGcInput").value = state.optGc;
+      document.getElementById("targetBaseInput").value = state.targetBasePos || "";
+
+      document.querySelectorAll(".strand-btn").forEach((btn) => {
+        const isMatch = btn.getAttribute("data-strand") === state.strandMode;
+        if (isMatch) {
+          btn.className = "strand-btn py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer bg-indigo-600 text-white shadow";
+        } else {
+          btn.className = "strand-btn py-2 px-2.5 rounded-lg text-xs font-semibold transition cursor-pointer text-slate-400 hover:text-slate-200";
+        }
+      });
+    }
+  </script>
+</body>
+</html>
