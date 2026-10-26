@@ -1,5 +1,3 @@
-#!/usr/bin/env python3
-"""
 CRISPR SpCas9 Guide RNA Designer (Unified Engine)
 =================================================
 100% parity with the interactive web application.
